@@ -54,7 +54,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install wheel requests pytest
+          python -m pip install setuptools wheel requests pytest
           python -m pip install -e .
 
       - name: Build C extensions in place
