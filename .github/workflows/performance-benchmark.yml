@@ -106,3 +106,4 @@ jobs:
             test/benchmark_surrogate_evaluations.json
             test/benchmark_surrogate_evaluations.md
             test/benchmark_surrogate_evaluations.png
+            test/benchmark_surrogate_evaluations.html

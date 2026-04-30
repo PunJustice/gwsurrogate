@@ -5,7 +5,7 @@ Author: OpenAI GPT-5 Codex
 
 This script times a small set of representative waveform evaluations, stores
 machine-readable JSON, writes a Markdown report with profiling appendices, and
-writes a PNG timing table.
+writes PNG and self-contained HTML timing dashboards.
 
 Typical usage:
 
@@ -33,8 +33,10 @@ from __future__ import annotations
 import argparse
 import cProfile
 import datetime as _datetime
+import html as _html
 import io
 import json
+import math
 import os
 import platform
 import pstats
@@ -357,6 +359,11 @@ def format_seconds(value: float | None) -> str:
     return f"{value:.6g}"
 
 
+def escape_html(value: Any) -> str:
+    """Escape a value for safe insertion into the static HTML report."""
+    return _html.escape(str(value), quote=True)
+
+
 def result_lookup(run: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     """Map (model, case_id) pairs to timing result dictionaries."""
     return {
@@ -600,22 +607,339 @@ def write_markdown(path: Path, benchmark: dict[str, Any], png_path: Path | None 
         status = git.get("status_short")
         if status and status != "unknown":
             lines.extend(["Git status:", "", "```text", status, "```", ""])
-        hardware = context.get("hardware", {})
+
+    lines.extend(["## Appendix", "", "### Hardware Data", ""])
+    for run in runs:
+        hardware = run["context"].get("hardware", {})
+        lines.extend([f"#### {run['label']}", ""])
+        if not hardware:
+            lines.extend(["No hardware data recorded.", ""])
+            continue
         for key, value in hardware.items():
             lines.extend([f"{key}:", "", "```text", value, "```", ""])
 
-    lines.extend(["## cProfile Appendix", ""])
+    lines.extend(["### cProfile", ""])
     for run in runs:
-        lines.extend([f"### {run['label']}", ""])
+        lines.extend([f"#### {run['label']}", ""])
         for result in run["results"]:
             profile = result.get("profile_cumulative")
             if not profile:
                 continue
             title = f"{result['model']} / {result['case_id']}"
-            lines.extend([f"#### {title}", "", "```text", profile.rstrip(), "```", ""])
+            lines.extend([f"##### {title}", "", "```text", profile.rstrip(), "```", ""])
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def geometric_mean(values: list[float]) -> float | None:
+    """Return the geometric mean of positive values, or None for no data."""
+    positive_values = [value for value in values if value > 0]
+    if not positive_values:
+        return None
+    return math.exp(sum(math.log(value) for value in positive_values) / len(positive_values))
+
+
+def speedup_class(value: float | None) -> str:
+    """Return the CSS class for a speedup value."""
+    if value is None:
+        return "neutral"
+    if value >= 1.05:
+        return "faster"
+    if value <= 0.95:
+        return "slower"
+    return "neutral"
+
+
+def html_run_summary(run: dict[str, Any]) -> str:
+    """Render a compact run context summary for the HTML dashboard."""
+    context = run["context"]
+    git = context.get("git", {})
+    platform_info = context.get("platform", {})
+    conda = context.get("conda", {})
+    items = [
+        ("branch", git.get("branch", "unknown")),
+        ("commit", git.get("commit", "unknown")),
+        ("describe", git.get("describe", "unknown")),
+        ("python", context.get("python", {}).get("version", "unknown")),
+        ("platform", f"{platform_info.get('system', '')} {platform_info.get('release', '')} {platform_info.get('machine', '')}"),
+        ("cpu count", context.get("cpu_count", "unknown")),
+        ("conda env", conda.get("default_env") or conda.get("prefix") or "unknown"),
+    ]
+    rows = "\n".join(
+        f"<tr><th>{escape_html(label)}</th><td>{escape_html(value)}</td></tr>"
+        for label, value in items
+    )
+    return f"""
+      <section class="panel">
+        <h3>{escape_html(run['label'])}</h3>
+        <table class="meta"><tbody>{rows}</tbody></table>
+      </section>
+    """
+
+
+def html_speedup_overview(benchmark: dict[str, Any]) -> str:
+    """Render per-model geometric mean speedups for two-run comparisons."""
+    runs = benchmark.get("runs", [benchmark])
+    if len(runs) < 2:
+        return ""
+    baseline, comparison = runs[0], runs[1]
+    baseline_lookup = result_lookup(baseline)
+    comparison_lookup = result_lookup(comparison)
+    cards = []
+    for model in baseline["models"]:
+        ratios = []
+        for case in cases_for_model(baseline, model):
+            baseline_best = case_timing(baseline_lookup.get((model, case["id"]))).get("best")
+            comparison_best = case_timing(comparison_lookup.get((model, case["id"]))).get("best")
+            if baseline_best and comparison_best:
+                ratios.append(baseline_best / comparison_best)
+        speedup = geometric_mean(ratios)
+        label = f"{speedup:.3g}x" if speedup else ""
+        cards.append(
+            f"""
+            <div class="metric {speedup_class(speedup)}">
+              <div class="metric-label">{escape_html(model)}</div>
+              <div class="metric-value">{escape_html(label)}</div>
+              <div class="metric-note">geomean {escape_html(baseline['label'])} / {escape_html(comparison['label'])}</div>
+            </div>
+            """
+        )
+    return f"""
+      <section>
+        <h2>Speedup Overview</h2>
+        <div class="metrics">{''.join(cards)}</div>
+      </section>
+    """
+
+
+def html_model_table(benchmark: dict[str, Any], model: str) -> str:
+    """Render the HTML timing table for one model."""
+    runs = benchmark.get("runs", [benchmark])
+    run_lookups = [result_lookup(run) for run in runs]
+    cases = cases_for_model(runs[0], model)
+    parameter_label = model_parameter_label(model, benchmark)
+    header_top = ["<th rowspan=\"2\">units</th>", "<th rowspan=\"2\">dt</th>", "<th rowspan=\"2\">f_low</th>"]
+    header_bottom = []
+    for run in runs:
+        header_top.append(f"<th colspan=\"2\">{escape_html(run['label'])}</th>")
+        header_bottom.extend(["<th>best (s)</th>", "<th>median (s)</th>"])
+    if len(runs) == 2:
+        header_top.append("<th rowspan=\"2\">speedup</th>")
+    body_rows = []
+    for case in cases:
+        cells = [
+            f"<td>{escape_html(case['group'])}</td>",
+            f"<td>{escape_html(case_dt_label(case))}</td>",
+            f"<td>{escape_html(case_f_low_label(case))}</td>",
+        ]
+        run_timings = [
+            case_timing(lookup.get((model, case["id"])))
+            for lookup in run_lookups
+        ]
+        for timing in run_timings:
+            cells.extend(
+                [
+                    f"<td class=\"num\">{escape_html(format_seconds(timing.get('best')))}</td>",
+                    f"<td class=\"num\">{escape_html(format_seconds(timing.get('median')))}</td>",
+                ]
+            )
+        if len(runs) == 2:
+            baseline_best = run_timings[0].get("best")
+            comparison_best = run_timings[1].get("best")
+            speedup = baseline_best / comparison_best if baseline_best and comparison_best else None
+            width = min(100.0, 50.0 * speedup) if speedup else 0.0
+            cells.append(
+                f"""
+                <td class="speed {speedup_class(speedup)}">
+                  <span>{escape_html(format_speedup(baseline_best, comparison_best))}</span>
+                  <div class="bar"><i style="width:{width:.1f}%"></i></div>
+                </td>
+                """
+            )
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    return f"""
+      <section class="model">
+        <h3>{escape_html(model)}</h3>
+        <div class="params">{escape_html(parameter_label)}</div>
+        <div class="table-wrap">
+          <table class="timings">
+            <thead>
+              <tr>{''.join(header_top)}</tr>
+              <tr>{''.join(header_bottom)}</tr>
+            </thead>
+            <tbody>{''.join(body_rows)}</tbody>
+          </table>
+        </div>
+      </section>
+    """
+
+
+def html_hardware_data(benchmark: dict[str, Any]) -> str:
+    """Render hardware data in collapsible HTML details blocks."""
+    runs = benchmark.get("runs", [benchmark])
+    blocks = []
+    for run in runs:
+        hardware = run["context"].get("hardware", {})
+        if not hardware:
+            body = "<p class=\"small\">No hardware data recorded.</p>"
+        else:
+            body = "".join(
+                f"""
+                <details>
+                  <summary>{escape_html(key)}</summary>
+                  <pre>{escape_html(value)}</pre>
+                </details>
+                """
+                for key, value in hardware.items()
+            )
+        blocks.append(
+            f"""
+            <section class="panel">
+              <h4>{escape_html(run['label'])}</h4>
+              {body}
+            </section>
+            """
+        )
+    return f"<section><h3>Hardware Data</h3><div class=\"grid\">{''.join(blocks)}</div></section>"
+
+
+def html_profiles(benchmark: dict[str, Any]) -> str:
+    """Render cProfile output in collapsible HTML details blocks."""
+    runs = benchmark.get("runs", [benchmark])
+    blocks = []
+    for run in runs:
+        run_blocks = []
+        for result in run["results"]:
+            profile = result.get("profile_cumulative")
+            if not profile:
+                continue
+            title = f"{result['model']} / {result['case_id']}"
+            run_blocks.append(
+                f"""
+                <details>
+                  <summary>{escape_html(title)}</summary>
+                  <pre>{escape_html(profile.rstrip())}</pre>
+                </details>
+                """
+            )
+        blocks.append(
+            f"""
+            <section class="panel">
+              <h3>{escape_html(run['label'])}</h3>
+              {''.join(run_blocks)}
+            </section>
+            """
+        )
+    return f"<section><h3>cProfile</h3>{''.join(blocks)}</section>"
+
+
+def html_appendix(benchmark: dict[str, Any]) -> str:
+    """Render the HTML appendix sections."""
+    return f"""
+      <section>
+        <h2>Appendix</h2>
+        {html_hardware_data(benchmark)}
+        {html_profiles(benchmark)}
+      </section>
+    """
+
+
+def write_html_dashboard(path: Path, benchmark: dict[str, Any]) -> None:
+    """Write a self-contained static HTML benchmark dashboard."""
+    runs = benchmark.get("runs", [benchmark])
+    models = list(dict.fromkeys(model for run in runs for model in run["models"]))
+    settings = runs[0].get("settings", {})
+    css = """
+      :root { color-scheme: light; --ink:#17202a; --muted:#5f6b7a; --line:#d7dee8; --panel:#ffffff; --bg:#f5f7fb; --green:#d9ead3; --yellow:#fff2cc; --red:#f8d7da; --blue:#d9eaf7; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+      header { padding: 28px 36px; background: #1f2937; color: white; }
+      header h1 { margin: 0 0 8px; font-size: 28px; }
+      header p { margin: 0; color: #d1d5db; }
+      main { padding: 28px 36px 48px; max-width: 1500px; margin: 0 auto; }
+      h2 { margin: 28px 0 12px; font-size: 22px; }
+      h3 { margin: 0 0 10px; font-size: 18px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+      .panel, .model { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+      .notices { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 18px; }
+      .notice { border: 2px solid #d6a500; background: #fff8d6; border-radius: 8px; padding: 14px 16px; }
+      .notice.hardware { border-color: #d9534f; background: #fff1f1; }
+      .notice strong { display: block; margin-bottom: 6px; }
+      .notice p { margin: 6px 0 0; }
+      .warning-text { color: #b42318; font-weight: 700; }
+      .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+      .metric { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: white; }
+      .metric.faster { border-color: #8bc58a; background: #f1faef; }
+      .metric.slower { border-color: #e0969c; background: #fff3f3; }
+      .metric-label { color: var(--muted); font-size: 13px; }
+      .metric-value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+      .metric-note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+      .params { background: var(--yellow); border: 1px solid #e5cf84; border-radius: 6px; padding: 8px 10px; margin-bottom: 12px; font-weight: 600; }
+      .table-wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: middle; }
+      th { background: var(--green); font-weight: 700; text-align: center; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      tbody tr:nth-child(even) td { background: #f8fafc; }
+      .speed { min-width: 130px; font-variant-numeric: tabular-nums; }
+      .speed span { font-weight: 700; }
+      .speed.faster span { color: #256029; }
+      .speed.slower span { color: #8a1c25; }
+      .bar { height: 7px; background: #e5e7eb; border-radius: 99px; margin-top: 5px; overflow: hidden; }
+      .bar i { display: block; height: 100%; background: #60a5fa; }
+      .speed.faster .bar i { background: #65a765; }
+      .speed.slower .bar i { background: #d66b75; }
+      .meta th { width: 120px; text-align: left; background: #eef4ee; }
+      details { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; background: white; }
+      summary { cursor: pointer; padding: 9px 11px; font-weight: 600; }
+      pre { margin: 0; padding: 12px; overflow-x: auto; background: #111827; color: #e5e7eb; font-size: 12px; line-height: 1.45; }
+      .small { color: var(--muted); font-size: 13px; }
+    """
+    model_sections = "\n".join(html_model_table(benchmark, model) for model in models)
+    run_summaries = "\n".join(html_run_summary(run) for run in runs)
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GWSurrogate Performance Benchmark</title>
+  <style>{css}</style>
+</head>
+<body>
+  <header>
+    <h1>GWSurrogate Performance Benchmark</h1>
+    <p>Generated {escape_html(benchmark['generated_utc'])}. Times are seconds per model evaluation.</p>
+  </header>
+  <main>
+    <section class="notices">
+      <div class="notice hardware">
+        <strong>Hardware-dependent timing data</strong>
+        <p>These timings depend on CPU, memory, operating system, Python, compiled libraries, and system load.</p>
+        <p class="warning-text">Benchmarks run on GitHub Actions are expected to be slower and noisier than benchmarks run on dedicated HPC resources.</p>
+      </div>
+      <div class="notice">
+        <strong>Speedup formula</strong>
+        <p>Speedup is computed from best times as <code>baseline best time / comparison best time</code>.</p>
+        <p>Values above <code>1x</code> mean the comparison run is faster than the baseline.</p>
+      </div>
+    </section>
+    <section class="grid">
+      <div class="panel"><h3>Benchmark Settings</h3><p class="small">repeat={escape_html(settings.get('repeat', 'unknown'))}, number={escape_html(settings.get('number', 'unknown'))}, profile_limit={escape_html(settings.get('profile_limit', 'unknown'))}</p></div>
+      <div class="panel"><h3>Runs</h3><p class="small">{escape_html(', '.join(run['label'] for run in runs))}</p></div>
+      <div class="panel"><h3>Models</h3><p class="small">{escape_html(', '.join(models))}</p></div>
+    </section>
+    {html_speedup_overview(benchmark)}
+    <section><h2>Timing Tables</h2>{model_sections}</section>
+    <section><h2>Run Context</h2><div class="grid">{run_summaries}</div></section>
+    {html_appendix(benchmark)}
+  </main>
+</body>
+</html>
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
 
 
 def write_png_table(path: Path, benchmark: dict[str, Any]) -> None:
@@ -699,6 +1023,8 @@ def run_subprocess_for_ref(
             str(md_path),
             "--png-output",
             str(png_path),
+            "--html-output",
+            str(temp_root / f"{label.replace('/', '_')}.html"),
             "--repeat",
             str(args.repeat),
             "--number",
@@ -743,6 +1069,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-output", type=Path, default=Path("test/benchmark_surrogate_evaluations.json"))
     parser.add_argument("--md-output", type=Path, default=Path("test/benchmark_surrogate_evaluations.md"))
     parser.add_argument("--png-output", type=Path, default=Path("test/benchmark_surrogate_evaluations.png"))
+    parser.add_argument("--html-output", type=Path, default=Path("test/benchmark_surrogate_evaluations.html"))
     parser.add_argument("--single-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repo-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--compare-ref", action="append", default=[], help="Git ref to benchmark in a temporary worktree.")
@@ -773,6 +1100,7 @@ def main() -> int:
         wrapped = {"generated_utc": _datetime.datetime.now(_datetime.timezone.utc).isoformat(), **run}
         write_markdown(args.md_output, wrapped, args.png_output)
         write_png_table(args.png_output, wrapped)
+        write_html_dashboard(args.html_output, wrapped)
         return 0
 
     maybe_fetch_ref(repo_root, args.fetch_ref)
@@ -795,9 +1123,11 @@ def main() -> int:
     write_json(args.json_output, benchmark)
     write_markdown(args.md_output, benchmark, args.png_output)
     write_png_table(args.png_output, benchmark)
+    write_html_dashboard(args.html_output, benchmark)
     print(f"Wrote {args.json_output}")
     print(f"Wrote {args.md_output}")
     print(f"Wrote {args.png_output}")
+    print(f"Wrote {args.html_output}")
     return 0
 
 
