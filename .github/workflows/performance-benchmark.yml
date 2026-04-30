@@ -1,0 +1,108 @@
+name: GWSurrogate Performance Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_ref:
+        description: "Optional git ref to compare against, e.g. testing or pull/70/head"
+        required: false
+        default: ""
+      compare_label:
+        description: "Optional display label for the comparison ref, e.g. PR-70"
+        required: false
+        default: ""
+      repeat:
+        description: "Number of timing repeats per benchmark case"
+        required: true
+        default: "5"
+      number:
+        description: "Model evaluations per timing repeat"
+        required: true
+        default: "3"
+      profile_limit:
+        description: "Number of cProfile rows per benchmark case"
+        required: true
+        default: "40"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -yq install gcc libgsl-dev
+
+      - name: Cache surrogate downloads
+        uses: actions/cache@v4
+        with:
+          path: gwsurrogate/surrogate_downloads
+          key: surrogate-downloads-${{ runner.os }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install wheel requests pytest
+          python -m pip install -e .
+
+      - name: Build C extensions in place
+        run: |
+          python setup.py build_ext --inplace
+
+      - name: Show benchmark environment
+        run: |
+          python --version
+          python -m pip list
+          echo "GSL version..."
+          gsl-config --version
+
+      - name: Run benchmark
+        env:
+          COMPARE_REF: ${{ inputs.compare_ref }}
+          COMPARE_LABEL: ${{ inputs.compare_label }}
+          REPEAT: ${{ inputs.repeat }}
+          NUMBER: ${{ inputs.number }}
+          PROFILE_LIMIT: ${{ inputs.profile_limit }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$COMPARE_REF" ]; then
+            python test/benchmark_surrogate_evaluations.py \
+              --repeat "$REPEAT" \
+              --number "$NUMBER" \
+              --profile-limit "$PROFILE_LIMIT"
+          else
+            label="$COMPARE_LABEL"
+            if [ -z "$label" ]; then
+              label="$COMPARE_REF"
+            fi
+
+            python test/benchmark_surrogate_evaluations.py \
+              --fetch-ref "$COMPARE_REF" \
+              --compare-ref FETCH_HEAD \
+              --compare-label "$label" \
+              --repeat "$REPEAT" \
+              --number "$NUMBER" \
+              --profile-limit "$PROFILE_LIMIT"
+          fi
+
+      - name: Upload benchmark outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            test/benchmark_surrogate_evaluations.json
+            test/benchmark_surrogate_evaluations.md
+            test/benchmark_surrogate_evaluations.png
