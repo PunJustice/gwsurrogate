@@ -24,9 +24,17 @@ on:
         required: true
         default: "40"
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Check out repository code
@@ -107,3 +115,20 @@ jobs:
             test/benchmark_surrogate_evaluations.md
             test/benchmark_surrogate_evaluations.png
             test/benchmark_surrogate_evaluations.html
+
+      - name: Prepare GitHub Pages site
+        run: |
+          mkdir -p _site
+          cp test/benchmark_surrogate_evaluations.html _site/index.html
+          cp test/benchmark_surrogate_evaluations.json _site/
+          cp test/benchmark_surrogate_evaluations.md _site/
+          cp test/benchmark_surrogate_evaluations.png _site/
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
