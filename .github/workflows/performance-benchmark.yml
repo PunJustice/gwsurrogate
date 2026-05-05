@@ -23,11 +23,27 @@ on:
         description: "Number of cProfile rows per benchmark case"
         required: true
         default: "40"
+      archive_report:
+        description: "Save this benchmark report to the historical GitHub Pages archive"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      archive_label:
+        description: "Optional label for archived report, e.g. NumPy 2 migration baseline"
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   benchmark:
@@ -117,12 +133,38 @@ jobs:
             test/benchmark_surrogate_evaluations.html
 
       - name: Prepare GitHub Pages site
+        env:
+          ARCHIVE_REPORT: ${{ inputs.archive_report }}
+          ARCHIVE_LABEL: ${{ inputs.archive_label }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
+          COMPARE_LABEL: ${{ inputs.compare_label }}
         run: |
-          mkdir -p _site
-          cp test/benchmark_surrogate_evaluations.html _site/index.html
-          cp test/benchmark_surrogate_evaluations.json _site/
-          cp test/benchmark_surrogate_evaluations.md _site/
-          cp test/benchmark_surrogate_evaluations.png _site/
+          set -euo pipefail
+
+          rm -rf _pages _site
+
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch --depth=1 origin gh-pages
+            git worktree add _pages FETCH_HEAD
+          else
+            mkdir -p _pages
+            git -C _pages init
+            git -C _pages checkout -b gh-pages
+          fi
+
+          export RUN_ID="$(date -u +'%Y-%m-%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
+          python .github/scripts/prepare_benchmark_pages.py
+
+      - name: Commit archived benchmark report
+        if: ${{ inputs.archive_report == 'true' }}
+        run: |
+          set -euo pipefail
+
+          git -C _pages config user.name "github-actions[bot]"
+          git -C _pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C _pages add -A
+          git -C _pages commit -m "Archive benchmark report ${GITHUB_RUN_NUMBER}"
+          git -C _pages push origin HEAD:gh-pages
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
