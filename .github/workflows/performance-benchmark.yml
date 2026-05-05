@@ -138,6 +138,7 @@ jobs:
           ARCHIVE_LABEL: ${{ inputs.archive_label }}
           COMPARE_REF: ${{ inputs.compare_ref }}
           COMPARE_LABEL: ${{ inputs.compare_label }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -150,7 +151,8 @@ jobs:
             mkdir -p _pages
             git -C _pages init
             git -C _pages checkout -b gh-pages
-            git -C _pages remote add origin "$(git remote get-url origin)"
+            git -C _pages remote add origin \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           fi
 
           export RUN_ID="$(date -u +'%Y-%m-%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
@@ -158,6 +160,8 @@ jobs:
 
       - name: Commit archived benchmark report
         if: ${{ inputs.archive_report == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
