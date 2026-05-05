@@ -150,6 +150,7 @@ jobs:
             mkdir -p _pages
             git -C _pages init
             git -C _pages checkout -b gh-pages
+            git -C _pages remote add origin "$(git remote get-url origin)"
           fi
 
           export RUN_ID="$(date -u +'%Y-%m-%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
