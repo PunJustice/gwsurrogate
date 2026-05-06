@@ -73,7 +73,21 @@ The benchmark can also be run directly on an HPC system. The exact module and co
 
    This forwards your SSH login agent so the benchmark script can fetch a comparison ref from GitHub, such as a pull request branch.
 
-6. From the repository checkout on the compute node, run the benchmark. For example, to compare the current checkout with pull request 70:
+6. For stable HPC timings, pin common BLAS and thread-pool libraries to one
+   thread before launching Python:
+
+   ```sh
+   export OMP_NUM_THREADS=1
+   export OPENBLAS_NUM_THREADS=1
+   export MKL_NUM_THREADS=1
+   export BLIS_NUM_THREADS=1
+   export NUMEXPR_NUM_THREADS=1
+   ```
+
+   These variables should be set before running the benchmark so NumPy and the
+   BLAS backend see them during Python startup.
+
+7. From the repository checkout on the compute node, run the benchmark. For example, to compare the current checkout with pull request 70:
 
    ```sh
    python test/benchmark_surrogate_evaluations.py \
@@ -82,7 +96,7 @@ The benchmark can also be run directly on an HPC system. The exact module and co
      --compare-label pr-70
    ```
 
-7. Inspect the generated output files on the HPC filesystem:
+8. Inspect the generated output files on the HPC filesystem:
 
    ```sh
    ls test/benchmark_surrogate_evaluations.*

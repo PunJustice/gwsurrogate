@@ -86,6 +86,22 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 }
 ENABLED_MODELS = PRECESSING_MODELS + HYBRID_MODELS
 
+BLAS_THREADING_ENV_VARS = [
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "GOTO_NUM_THREADS",
+    "OMP_DYNAMIC",
+    "MKL_DYNAMIC",
+    "OMP_PROC_BIND",
+    "OMP_PLACES",
+    "SLURM_CPUS_PER_TASK",
+    "SLURM_JOB_CPUS_PER_NODE",
+]
+
 
 def dimensionless_cases(dt_values: list[float], f_low_values: list[float]) -> list[dict[str, Any]]:
     """Build the geometric-unit benchmark cases."""
@@ -217,6 +233,32 @@ def git_value(args: list[str], repo_root: Path) -> str:
     return value if value else "unknown"
 
 
+def collect_threading_context() -> dict[str, Any]:
+    """Collect BLAS and thread-pool context for reproducible timings."""
+    context: dict[str, Any] = {
+        "environment": {
+            name: os.environ.get(name)
+            for name in BLAS_THREADING_ENV_VARS
+        },
+    }
+    if hasattr(os, "sched_getaffinity"):
+        context["sched_getaffinity_count"] = len(os.sched_getaffinity(0))
+
+    try:
+        from threadpoolctl import threadpool_info
+    except ImportError as exc:
+        context["threadpoolctl"] = {
+            "available": False,
+            "error": str(exc),
+        }
+    else:
+        context["threadpoolctl"] = {
+            "available": True,
+            "info": threadpool_info(),
+        }
+    return context
+
+
 def collect_context(repo_root: Path) -> dict[str, Any]:
     """Collect reproducibility context for a benchmark run."""
     context: dict[str, Any] = {
@@ -239,6 +281,7 @@ def collect_context(repo_root: Path) -> dict[str, Any]:
             "default_env": os.environ.get("CONDA_DEFAULT_ENV"),
             "python_exe": os.environ.get("CONDA_PYTHON_EXE"),
         },
+        "threading": collect_threading_context(),
         "git": {
             "repo_root": str(repo_root),
             "branch": git_value(["branch", "--show-current"], repo_root),
