@@ -20,6 +20,31 @@ ARTIFACT_FILES = [
 ]
 
 
+def write_page(path: Path, title: str, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: sans-serif; margin: 2rem; line-height: 1.5; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; }}
+    nav a, .links a {{ margin-right: 1rem; }}
+  </style>
+</head>
+<body>
+{body}
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+
+
 def copy_report(destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(
@@ -72,6 +97,33 @@ def load_reports(runs_dir: Path) -> list[dict[str, str]]:
     return reports
 
 
+def render_project_index() -> None:
+    write_page(
+        SITE / "index.html",
+        "GWSurrogate",
+        """  <h1>GWSurrogate</h1>
+  <p>Project pages for GWSurrogate reports and generated resources.</p>
+  <div class="links">
+    <a href="benchmarks/">Performance benchmarks</a>
+  </div>
+""",
+    )
+
+
+def render_benchmarks_index(benchmarks_dir: Path) -> None:
+    write_page(
+        benchmarks_dir / "index.html",
+        "GWSurrogate Performance Benchmarks",
+        """  <h1>GWSurrogate Performance Benchmarks</h1>
+  <p>Benchmark reports compare surrogate model evaluation runtimes across git references.</p>
+  <div class="links">
+    <a href="latest/">Latest report</a>
+    <a href="runs/">Archived reports</a>
+  </div>
+""",
+    )
+
+
 def render_history_index(runs_dir: Path, reports: list[dict[str, str]]) -> None:
     rows = []
     for report in reports:
@@ -94,22 +146,14 @@ def render_history_index(runs_dir: Path, reports: list[dict[str, str]]) -> None:
     else:
         body = '<tr><td colspan="4">No benchmark reports have been archived yet.</td></tr>'
 
-    (runs_dir / "index.html").write_text(
-        f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GWSurrogate Benchmark History</title>
-  <style>
-    body {{ font-family: sans-serif; margin: 2rem; line-height: 1.5; }}
-    table {{ border-collapse: collapse; width: 100%; }}
-    th, td {{ border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; }}
-  </style>
-</head>
-<body>
+    write_page(
+        runs_dir / "index.html",
+        "GWSurrogate Benchmark History",
+        f"""  <nav>
+    <a href="../">Benchmarks</a>
+    <a href="../latest/">Latest report</a>
+  </nav>
   <h1>GWSurrogate Benchmark History</h1>
-  <p><a href="../">Latest benchmark report</a></p>
   <table>
     <thead>
       <tr>
@@ -123,10 +167,7 @@ def render_history_index(runs_dir: Path, reports: list[dict[str, str]]) -> None:
 {body}
     </tbody>
   </table>
-</body>
-</html>
 """,
-        encoding="utf-8",
     )
 
 
@@ -134,19 +175,22 @@ def main() -> None:
     SITE.mkdir(parents=True, exist_ok=True)
     (SITE / ".nojekyll").write_text("", encoding="utf-8")
 
-    copy_report(SITE)
+    benchmarks_dir = SITE / "benchmarks"
+    benchmarks_dir.mkdir(parents=True, exist_ok=True)
 
-    latest = SITE / "latest"
+    latest = benchmarks_dir / "latest"
     if latest.exists():
         shutil.rmtree(latest)
     copy_report(latest)
 
-    runs_dir = SITE / "runs"
+    runs_dir = benchmarks_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     if os.environ["ARCHIVE_REPORT"] == "true":
         archive_current_report(runs_dir)
 
+    render_project_index()
+    render_benchmarks_index(benchmarks_dir)
     render_history_index(runs_dir, load_reports(runs_dir))
 
     if PUBLISH.exists():
