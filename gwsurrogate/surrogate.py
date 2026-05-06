@@ -1590,7 +1590,7 @@ class SurrogateEvaluator(object):
 
 
     def _get_intrinsic_parameters(self, q, chiA0, chiB0, precessing_opts,
-            tidal_opts, par_dict):
+            tidal_opts, par_dict, e=None, meanano=None):
         """
         This function, which must be overriden for each derived class of
         SurrogateEvaluator, puts all intrinsic parameters of the surrogate
@@ -1723,7 +1723,7 @@ class SurrogateEvaluator(object):
         mode_list=None, ellMax=None, inclination=None, phi_ref=0,
         precessing_opts=None, tidal_opts=None, par_dict=None,
         units='dimensionless', skip_param_checks=False,
-        taper_end_duration=None):
+        taper_end_duration=None, e=None, meanano=None):
         r"""
     INPUT
     =====
@@ -2026,13 +2026,22 @@ class SurrogateEvaluator(object):
             if (taper_end_duration is not None) and self._domain_type !='Time':
                 raise ValueError("%s is not a Time domain model, cannot taper")
 
+            if (e is None and meanano is not None) or (e is not None and meanano is None):
+                raise ValueError("Either (e, meanano) or neither should be specified.")
+
+            if (e is not None or meanano is not None) and not self.keywords['Eccentric']:
+                raise ValueError("An eccentric parameter was passed but this is not an eccentric surrogate model.")
+
             # more sanity checks including extrapolation checks
             self._check_params(q, chiA0, chiB0, precessing_opts, tidal_opts,
                     par_dict)
 
-
-        x = self._get_intrinsic_parameters(q, chiA0, chiB0, precessing_opts,
-            tidal_opts, par_dict)
+        if not self.keywords['Eccentric']:
+          x = self._get_intrinsic_parameters(q, chiA0, chiB0, precessing_opts,
+              tidal_opts, par_dict)
+        else:
+          x = self._get_intrinsic_parameters(q, chiA0, chiB0, precessing_opts,
+              tidal_opts, par_dict,e=e,meanano=meanano)
 
 
         # Get scalings from dimensionless units to mks units
@@ -2131,6 +2140,61 @@ class SurrogateEvaluator(object):
 
 
 
+
+class NRSurE_q4NoSpin_22(SurrogateEvaluator):
+    r"""
+A class for the NRSurE_q4NoSpin_22 surrogate model presented in Nee et. al 2025,
+arxiv:2510.00106.
+
+See the __call__ method on how to evaluate waveforms.
+   """
+
+    def __init__(self, h5filename):
+        self.h5filename = h5filename
+        domain_type = 'Time'
+        keywords = {
+            'Precessing': False,
+            'Hybridized': True,
+            'Eccentric': True,
+            }
+        # soft_lims -> raise warning when outside lims
+        # hard_lim -> raise error when outside lims
+        # Format is [qMax, chiMax].
+        soft_param_lims = [4.01, 1e-5]
+        hard_param_lims = [6.01, 1e-5]
+        super(NRSurE_q4NoSpin_22, self).__init__(self.__class__.__name__, \
+            domain_type, keywords, soft_param_lims, hard_param_lims)
+
+    def _load_dimless_surrogate(self):
+        """
+        This function, which must be overriden for each derived class of
+        SurrogateEvaluator, handles the loading of the dimensionless surrogate.
+        This should return the loaded surrogate.
+        The loaded surrogate should have a __call__ function that returns the
+        dimensionless time/frequency array and dimensionless waveform modes.
+        The return value of this functions will be stored as
+        self._sur_dimless()
+        The __call__ function of self._sur_dimless() should take all inputs
+        passed to self._sur_dimless() in the __call__ function of this class.
+        """
+        sur = new_surrogate.EccentricDecomposedSurrogateSingleMode()
+        with h5py.File(self.h5filename) as f:
+          sur.inspiral_surrogate.load(f["inspiral"])
+          sur.merger_surrogate.load(f["merger"])
+        return sur
+
+    def _get_intrinsic_parameters(self, q, chiA0, chiB0, precessing_opts,
+            tidal_opts, par_dict, e=None, meanano=None):
+        """
+        This function, which must be overriden for each derived class of
+        SurrogateEvaluator, puts all intrinsic parameters of the surrogate
+        into a single array.
+        For example, for NRSurE_q4NoSpin_22: x = [q, chiAz, chiBz].
+        """
+        if par_dict is not None:
+            raise ValueError('Expected par_dict to be None.')
+        x = [q, e, meanano]
+        return x
 
 class NRHybSur3dq8(SurrogateEvaluator):
     r"""
@@ -2727,6 +2791,7 @@ SURROGATE_CLASSES = {
     "NRSur7dq4": NRSur7dq4,
     "NRHybSur3dq8Tidal": NRHybSur3dq8Tidal,
     "SEOBNRv4PHMSur": SEOBNRv4PHMSur,
+    "NRSurE_q4NoSpin_22": NRSurE_q4NoSpin_22,
 #    "SpEC_q1_10_NoSpin_nu5thDegPoly_exclude_2_0.h5":EvaluateSurrogate # model SpEC_q1_10_NoSpin
         }
 

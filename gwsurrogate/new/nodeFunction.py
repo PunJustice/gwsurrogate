@@ -111,6 +111,29 @@ class pySurrogateFit(SimpleH5Object):
     def __call__(self, x):
         return self.fitFunc(x)
 
+class NRSurE_q4NoSpin_22(pySurrogateFit):
+    """
+    Evaluates fits for the NRSurE_q4NoSpin_22 surrogate model.
+
+    Transforms the input parameter to fit parameters before evaluating the fit.
+    That is, maps from [q, e, ell] to [e, ell, np.log(q)].
+    """
+
+    def __call__(self, x):
+        q, e, ell = x
+
+        mapped_x = [e, ell, np.log(q)]
+
+        with warnings.catch_warnings():
+            # Ignore this specific GPR warning.
+            # This warning was mentioned in issues:
+            # https://github.com/autoreject/autoreject/issues/35
+            # https://github.com/scikit-learn/scikit-learn/issues/8748
+            # But it seems like we can ignore it
+            warnings.filterwarnings("ignore", message="Predicted variances"
+                " smaller than 0. Setting those variances to 0.")
+
+            return super(NRSurE_q4NoSpin_22, self).__call__(mapped_x)
 
 class NRHybSur3dq8Fit(pySurrogateFit):
     """
@@ -191,6 +214,7 @@ NODE_CLASSES = {
     "SpEC_q10_non_spinning": MappedPolyFit1D_q10_q_to_nu,
     "NRHybSur3dq8Fit": NRHybSur3dq8Fit,
     "NRHybSur2dq15Fit": NRHybSur2dq15Fit,
+    "NRSurE_q4NoSpin_22": NRSurE_q4NoSpin_22,
         }
 
 

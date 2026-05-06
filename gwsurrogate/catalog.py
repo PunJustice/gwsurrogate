@@ -212,6 +212,15 @@ _surrogate_world['BHPTNRSur1dq1e4'] = \
   '''https://arxiv.org/abs/2204.01972''',
   '58a3a75e8fd18786ecc88cf98f694d4a')
 
+_surrogate_world['NRSurE_q4NoSpin_22'] = \
+  surrogate_info(\
+  'https://www.dropbox.com/scl/fi/xswuiq6jsca79yqr6028i/NRSurE_q4NoSpin_22.tar.gz?rlkey=m76163ps2q95pmaw3k3jtfbck&st=h2qheppv&dl=1',
+  '''Surrogate model 'NRSurE_q4NoSpin_22' for non-spinning black hole binary
+  systems with mass-ratios up to 4 and eccentricities up to 0.25.
+  Currently only the (2,2) mode is available.''',
+  '''https://arxiv.org/abs/2510.00106''',
+  '3329ead716876f8641a622f1e92da4f7')
+
 # TODO: test function, and then use it whenever a file is loaded
 def is_file_recent(filename):
   """ Check local hdf5 file's hash against most recent one on Zenodo. """

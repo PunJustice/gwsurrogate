@@ -135,17 +135,29 @@ class SimpleH5Object(object):
         self._h5_data_keys = data_keys
         self._h5_subordinate_keys = sub_keys
 
-    def save(self, filename):
+    def save(self, filename, group=None):
         """Save data to h5 file"""
         if os.path.exists(filename):
-            raise Exception("Will not overwrite %s"%(filename))
-        with h5py.File(filename, 'w') as f:
-            self._write_h5(f)
+            if group is None:
+                raise Exception("Will not overwrite %s"%(filename))
+            else:
+                file_flag = "a"
+        else:
+            file_flag = "w"
+        with h5py.File(filename, file_flag) as f:
+            if group is None:
+                self._write_h5(f)
+            else:
+                f.create_group(group)
+                self._write_h5(f[group])
 
     def load(self, filename):
         """Load data from h5 file"""
-        with h5py.File(filename, 'r') as f:
-            self._read_h5(f)
+        if isinstance(filename, str):
+            with h5py.File(filename, 'r') as f:
+                self._read_h5(f)
+        else:
+            self._read_h5(filename)
 
     def _default_data_keys(self):
 

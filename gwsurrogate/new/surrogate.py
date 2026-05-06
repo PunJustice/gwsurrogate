@@ -33,6 +33,7 @@ import numpy as np
 from gwsurrogate.precessing_utils import _utils
 from scipy.interpolate import InterpolatedUnivariateSpline as _iuspline
 from gwtools.harmonics import sYlm as _sYlm
+import math
 
 # setting __package__ to gwsurrogate.new so relative imports work
 __package__="gwsurrogate.new"
@@ -1048,6 +1049,242 @@ class AlignedSpinCoOrbitalFrameSurrogate(ManyFunctionSurrogate):
 
         return self._coorbital_to_inertial_frame(h_coorb, h_22, \
             mode_list, dtM, timesM, fM_low, fM_ref, do_not_align)
+
+class EccentricDecomposedSurrogateSingleMode(object):
+    """
+    A surrogate for coorbital frame multimodal waveforms, which is built from
+    two component surrogates (ManyFunctionSurrogates); one for the inspiral, with
+    a domain that is the radial phase, and a second surrogate for the merger-ringdown,
+    with a domain that is time.
+    """
+
+    def __init__(self, name=None, domain_inspiral=None, domain_merger=None, param_space=None, \
+             coorb_mode_data_inspiral={(2, 2): {}}, coorb_mode_data_merger={(2, 2): {}}):
+        """
+        name:               A descriptive name for this surrogate.
+
+        domain_inspiral:    A 1d array of the monotonically increasing radial
+                            phase values for the inspiral surrogate.
+
+        domain_merger:      A 1d array of the monotonically increasing time
+                            values for the merger surrogate.
+
+        param_space:        A ParamSpace for this surrogate.
+
+        coorb_mode_data_inspiral: A dictionary of modes with (l, m) integer
+                            keys, where the values are themselves dictionaries
+                            containing the coorbital frame waveform for that
+                            mode for the inspiral surrogate.
+
+        coorb_mode_data_merger: A dictionary of modes with (l, m) integer
+                            keys, where the values are themselves dictionaries
+                            containing the coorbital frame waveform for that
+                            mode for the merger surrogate.
+
+        """
+        self.mode_type = 'identity'
+        many_function_components_inspiral = {}
+        many_function_components_inspiral[(2,2)] = ('identity', \
+            coorb_mode_data_inspiral[(2,2)], {})
+        self.inspiral_surrogate = ManyFunctionSurrogate(name,
+                domain_inspiral, param_space, {}, many_function_components_inspiral,
+                self.mode_type)
+        many_function_components_merger = {}
+        many_function_components_merger[(2,2)] = ('identity', \
+            coorb_mode_data_merger[(2,2)], {})
+        self.merger_surrogate = ManyFunctionSurrogate(name,
+                domain_merger, param_space, {}, many_function_components_merger,
+                self.mode_type)
+
+    def rotate_to_real(self, arr, index):
+        # Get the complex number at the specified index
+        z = arr[index]
+
+        # Compute the phase factor
+        phase_factor = np.conj(z) / np.abs(z)
+
+        # Rotate the entire array
+        rotated_arr = arr * phase_factor
+
+        return rotated_arr
+
+    def taper(self, t, center, width, parity):
+        t = np.asarray(t)
+        result = np.zeros_like(t, dtype=float)
+
+        temp_t = (t - center) * parity + width / 2
+
+        # Masks
+        mask_low = temp_t <= 0
+        mask_high = temp_t >= width
+        mask_mid = (~mask_low) & (~mask_high)
+
+        # Assign boundary values
+        result[mask_low] = 0.0
+        result[mask_high] = 1.0
+
+        # Compute smooth transition only where needed
+        tt = temp_t[mask_mid]
+        result[mask_mid] = 1.0 / (
+            1.0 + np.exp(width / tt - width / (width - tt))
+        )
+
+        return result
+
+    def interpolate_to_common_grid(self, t_new, time1, data1, time2, data2):
+        mask1 = t_new < time1[-1]
+        data1_interp = np.zeros_like(t_new,dtype=complex)
+        data1_interp[mask1] = _splinterp_Cwrapper(t_new[mask1], time1, data1)
+        mask2 = t_new > time2[0]
+        data2_interp = np.zeros_like(t_new,dtype=complex)
+        data2_interp[mask2] = _splinterp_Cwrapper(t_new[mask2], time2, data2)
+        return data1_interp, data2_interp
+
+    def interpolate_to_common_grid_linear(self, t_new, time1, data1, time2, data2):
+        data1_interp = np.interp(t_new, time1, data1, left=0.0, right=0.0)
+        data2_interp = np.interp(t_new, time2, data2, left=0.0, right=0.0)
+        return data1_interp, data2_interp
+
+    def __call__(self, x, fM_low=None, fM_ref=None, dtM=None,
+            timesM=None, dfM=None, freqsM=None, mode_list=None, ellMax=None,
+            precessing_opts=None, tidal_opts=None, par_dict=None,
+            return_dynamics=False, do_not_align=False):
+        """
+    Return dimensionless surrogate modes.
+    Arguments:
+    x :             The intrinsic parameters EXCLUDING total Mass (see
+                    self.param_space)
+
+    fM_low :        Initial frequency of (2,2) mode in units of cycles/M.
+                    If 0, will use the entire data of the surrogate.
+                    Default None.
+
+    fM_ref:         Frequency used to set the reference epoch at which
+                    the reference frame is defined and the spins are specified.
+                    See below for definition of the reference frame.
+                    Default: None.
+
+                    For time domain models, f_ref is used to determine a t_ref,
+                    such that the frequency of the (2, 2) mode equals f_ref at
+                    t=t_ref.
+
+    dtM :           Uniform time step to use, in units of M. If None, the
+                    returned time array will be the array used in the
+                    construction of the surrogate, which can be nonuniformly
+                    sampled.
+                    Default None.
+
+    timesM:         Time samples to evaluate the waveform at. Use either dtM or
+                    timesM, not both.
+
+    dfM :           This should always be None as for now we are assuming
+                    a time domain model.
+
+    freqsM:         Frequency samples to evaluate the waveform at. Use either
+                    dfM or freqsM, not both.
+
+    ellMax:         Maximum ell index for modes to include. All available m
+                    indicies for each ell will be included automatically.
+                    Default: None, in which case all available modes wll be
+                    included.
+
+    mode_list :     A list of (ell, m) modes to be evaluated.
+                    Default None, which evaluates all avilable modes.
+                    Will deduce the m<0 modes from m>0 modes.
+
+    par_dict:       This should always be None for this model.
+
+    do_not_align:   Ignore fM_ref and do not align the waveform. This should be
+                    True only when converting from pySurrogate format to
+                    gwsurrogate format as we may want to do some checks that
+                    the waveform has not been modified.
+
+    Returns
+    timesM, h, dynamics:
+        timesM : time array in units of M.
+        h : A dictionary of waveform modes sampled at timesM with
+            (ell, m) keys.
+        dynamics: None, since this is a nonprecessing model.
+
+
+    IMPORTANT NOTES:
+    ===============
+
+    The reference frame (or inertial frame) is defined as follows:
+        The +ve z-axis is along the orbital angular momentum at the reference
+        epoch. The separation vector from the lighter BH to the heavier BH at
+        the reference epoch is along the +ve x-axis. The y-axis completes the
+        right-handed triad. The reference epoch is set using f_ref.
+        """
+
+        if dfM is not None:
+            raise ValueError('Expected dfM to be None for a Time domain model')
+        if freqsM is not None:
+            raise ValueError('Expected freqsM to be None for a Time domain'
+                ' model')
+
+        if mode_list is not None and mode_list != [(2, 2)]:
+            raise ValueError('For this model, only the (2, 2) mode is supported'
+                ' at this time.')
+
+        if par_dict is not None:
+            raise ValueError('par_dict should be None for this model')
+        h_dict_inspiral = self.inspiral_surrogate._eval_sur(x, tuple([2, 2]))
+        h_dict_inspiral = h_dict_inspiral[0]
+        mean_ano = self.inspiral_surrogate.domain
+        h_dict_merger = self.merger_surrogate._eval_sur(x, tuple([2, 2]))
+        h_dict_merger = h_dict_merger[0]
+        time_merger = self.merger_surrogate.domain
+
+        t_last_periastron = h_dict_inspiral["time"][-1]
+        # Hard coded index
+        t_second_last_periastron = h_dict_inspiral["time"][62832]
+        final_ano_range = (
+            2
+            * np.pi
+            * (h_dict_inspiral["time"] - t_second_last_periastron)
+            / (t_last_periastron - t_second_last_periastron)
+        )
+        t_align_index_inspiral = np.argmin(np.abs(final_ano_range - x[2]))
+        h_dict_inspiral["time"] = (
+            h_dict_inspiral["time"] - h_dict_inspiral["time"][t_align_index_inspiral] - 1200
+        )
+
+        # Set up time grid
+        t_min = 0.1 * math.ceil(h_dict_inspiral["time"][0] * 10)
+        t_max = 0.1 * math.floor(time_merger[-2] * 10)
+        if timesM is not None:
+            if t_min > timesM[0]:
+                raise ValueError("The start time of the inspiral surrogate is more than the start time of the output grid. Try increasing the initial value of timesM.")
+            if t_max < timesM[-1]:
+                raise ValueError("The end time of the merger surrogate is less than the end time of the output grid. Try decreasing the final value of timesM.")
+        elif dtM is not None:
+            num_times = int(np.ceil((t_max - t_min)/dtM))
+            timesM = t_min + dtM*np.arange(num_times)
+        else:
+            # Default to grid of 0.1M
+            timesM = np.arange(t_min, t_max+0.1, 0.1)
+        # Interpolate to common grid
+
+        h_inspiral, h_merger = self.interpolate_to_common_grid(
+            timesM,
+            h_dict_inspiral["time"],
+            self.rotate_to_real(
+                h_dict_inspiral["amp"] * (np.cos(h_dict_inspiral["phase"])-1.j*np.sin(h_dict_inspiral["phase"])),
+                np.argmin(np.abs(h_dict_inspiral["time"] + 1200)),
+            ),
+            time_merger,
+            self.rotate_to_real(
+                h_dict_merger["amp"] * (np.cos(h_dict_merger["phase"])-1.j*np.sin(h_dict_merger["phase"])),
+                np.argmin(np.abs(time_merger + 1200)),
+            ),
+        )
+        # Do tapering
+        return (
+            timesM,
+            {(2,2): h_merger + self.taper(timesM, -1230, 20, -1) * (h_inspiral - h_merger)},
+            None,  # dynamics
+        )
 
 class AlignedSpinCoOrbitalFrameSurrogateTidal(AlignedSpinCoOrbitalFrameSurrogate):
     """
