@@ -182,7 +182,17 @@ def update_submodules(worktree: Path) -> None:
     """Initialize submodules at the commits recorded by a temporary worktree."""
     print(f"Updating submodules in {worktree}", flush=True)
     subprocess.run(
-        ["git", "submodule", "update", "--init", "--recursive"],
+        [
+            "git",
+            "-c",
+            "url.https://github.com/.insteadOf=git@github.com:",
+            "-c",
+            "url.https://github.com/.insteadOf=ssh://git@github.com/",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ],
         cwd=str(worktree),
         check=True,
     )
