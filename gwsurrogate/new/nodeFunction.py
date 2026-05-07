@@ -91,6 +91,21 @@ class pySurrogateFit(SimpleH5Object):
         self.h5_prepare_subs()
 
     def h5_prepare_subs(self):
+        if self.fit_data is not None and "fitType" in self.fit_data and self.fit_data["fitType"] == "GPR":
+            # eval_pysur now has an in-line implementation of GPR denoted
+            # by fitType "GPR_fast", which bypasses all of the internal
+            # scikit-learn checks. This is significantly faster, and so
+            # we default to using it. However, for future surrogates that
+            # 
+            # 1) want to return the variance of parametric fits, or
+            #
+            # 2) do not use ConstantKernel * RBF + WhiteKernel, and
+            #    do not subtract a linear fit before fitting the GPR
+            #
+            # this setting should be adjusted. In the future, there
+            # will be a helper function to change fitType after
+            # loading a surrogate.
+            self.fit_data["fitType"] = "GPR_fast"
         self.fitFunc = evaluate_fit.getFitEvaluator(self.fit_data)
 
     def __call__(self, x):
