@@ -178,25 +178,14 @@ def run_command(args: list[str], cwd: Path | None = None, check: bool = False) -
     return completed.stdout.strip()
 
 
-def gitlink_paths(repo_root: Path) -> list[Path]:
-    """Return submodule/gitlink paths tracked by the repository."""
-    output = run_command(["git", "ls-files", "-s"], cwd=repo_root)
-    paths = []
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[0] == "160000":
-            paths.append(Path(parts[3]))
-    return paths
-
-
-def copy_populated_gitlinks(source_root: Path, destination_root: Path) -> None:
-    """Copy locally populated gitlink directories into a temporary worktree."""
-    for relative_path in gitlink_paths(source_root):
-        source = source_root / relative_path
-        destination = destination_root / relative_path
-        if not source.is_dir():
-            continue
-        shutil.copytree(source, destination, dirs_exist_ok=True)
+def update_submodules(worktree: Path) -> None:
+    """Initialize submodules at the commits recorded by a temporary worktree."""
+    print(f"Updating submodules in {worktree}", flush=True)
+    subprocess.run(
+        ["git", "submodule", "update", "--init", "--recursive"],
+        cwd=str(worktree),
+        check=True,
+    )
 
 
 def symlink_surrogate_downloads(source_root: Path, destination_root: Path) -> None:
@@ -231,6 +220,40 @@ def git_value(args: list[str], repo_root: Path) -> str:
     """Run a git command in repo_root and return a nonempty value or unknown."""
     value = run_command(["git", *args], cwd=repo_root)
     return value if value else "unknown"
+
+
+def collect_submodule_context(repo_root: Path) -> dict[str, dict[str, str]]:
+    """Collect submodule commits recorded in the benchmark checkout."""
+    output = run_command(["git", "submodule", "status", "--recursive"], cwd=repo_root)
+    submodules: dict[str, dict[str, str]] = {}
+    if not output or output == "unknown":
+        return submodules
+
+    status_labels = {
+        " ": "initialized",
+        "-": "not initialized",
+        "+": "checked out at different commit than recorded",
+        "U": "merge conflict",
+    }
+    for line in output.splitlines():
+        if not line:
+            continue
+        if line[0] in status_labels:
+            status_prefix = line[0]
+            parts = line[1:].strip().split(maxsplit=2)
+        else:
+            status_prefix = " "
+            parts = line.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            continue
+        commit, path = parts[:2]
+        submodules[path] = {
+            "status": status_labels.get(status_prefix, f"unknown ({status_prefix})"),
+            "commit": commit,
+        }
+        if len(parts) == 3:
+            submodules[path]["description"] = parts[2]
+    return submodules
 
 
 def collect_threading_context() -> dict[str, Any]:
@@ -288,6 +311,7 @@ def collect_context(repo_root: Path) -> dict[str, Any]:
             "commit": git_value(["rev-parse", "HEAD"], repo_root),
             "describe": git_value(["describe", "--always", "--dirty", "--tags"], repo_root),
             "status_short": git_value(["status", "--short"], repo_root),
+            "submodules": collect_submodule_context(repo_root),
         },
     }
     if shutil.which("conda"):
@@ -650,6 +674,18 @@ def write_markdown(path: Path, benchmark: dict[str, Any], png_path: Path | None 
         status = git.get("status_short")
         if status and status != "unknown":
             lines.extend(["Git status:", "", "```text", status, "```", ""])
+        submodules = git.get("submodules", {})
+        if submodules:
+            lines.extend(["Submodules:", ""])
+            for submodule_path, submodule in sorted(submodules.items()):
+                description = submodule.get("description")
+                detail = f" ({description})" if description else ""
+                lines.append(
+                    "- "
+                    f"`{submodule_path}`: `{submodule.get('commit', 'unknown')}` "
+                    f"{submodule.get('status', 'unknown')}{detail}"
+                )
+            lines.append("")
 
     lines.extend(["## Appendix", "", "### Hardware Data", ""])
     for run in runs:
@@ -709,6 +745,15 @@ def html_run_summary(run: dict[str, Any]) -> str:
         ("cpu count", context.get("cpu_count", "unknown")),
         ("conda env", conda.get("default_env") or conda.get("prefix") or "unknown"),
     ]
+    for submodule_path, submodule in sorted(git.get("submodules", {}).items()):
+        description = submodule.get("description")
+        detail = f" ({description})" if description else ""
+        items.append(
+            (
+                f"submodule {submodule_path}",
+                f"{submodule.get('commit', 'unknown')} {submodule.get('status', 'unknown')}{detail}",
+            )
+        )
     rows = "\n".join(
         f"<tr><th>{escape_html(label)}</th><td>{escape_html(value)}</td></tr>"
         for label, value in items
@@ -1045,7 +1090,7 @@ def run_subprocess_for_ref(
         cwd=str(repo_root),
         check=True,
     )
-    copy_populated_gitlinks(repo_root, worktree)
+    update_submodules(worktree)
     symlink_surrogate_downloads(repo_root, worktree)
     build_runtime_artifacts(worktree)
     try:
